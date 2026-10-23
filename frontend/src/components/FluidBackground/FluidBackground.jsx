@@ -28,6 +28,7 @@ export default function FluidBackground() {
     let previousTime = 0;
     let previousPointer = null;
     let pointerInside = false;
+    let pointerIsDown = false;
     let paletteIndex = -1;
     let stopped = false;
     const pointerEvents = [];
@@ -39,6 +40,7 @@ export default function FluidBackground() {
     };
 
     const onPointerMove = (event) => {
+      if (!pointerIsDown) return;
       const bounds = canvas.getBoundingClientRect();
       const inside = event.clientX >= bounds.left && event.clientX <= bounds.right
         && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
@@ -87,8 +89,26 @@ export default function FluidBackground() {
       }
     };
 
+    const onPointerDown = (event) => {
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      pointerIsDown = true;
+      resetPointer();
+      onPointerMove(event);
+    };
+
+    const onPointerUp = () => {
+      pointerIsDown = false;
+      previousPointer = null;
+      pointerInside = false;
+    };
+
+    const cancelPointer = () => {
+      pointerIsDown = false;
+      resetPointer();
+    };
+
     const onPointerOut = (event) => {
-      if (!event.relatedTarget) resetPointer();
+      if (!event.relatedTarget) cancelPointer();
     };
     const onContextLost = (event) => {
       event.preventDefault();
@@ -123,11 +143,13 @@ export default function FluidBackground() {
     const resizeObserver = new ResizeObserver(resetPointer);
     resizeObserver.observe(canvas);
     if (fluidConfig.pointerInteraction) {
+      window.addEventListener("pointerdown", onPointerDown, { passive: true });
       window.addEventListener("pointermove", onPointerMove, { passive: true });
+      window.addEventListener("pointerup", onPointerUp, { passive: true });
       window.addEventListener("pointerout", onPointerOut, { passive: true });
-      window.addEventListener("pointercancel", resetPointer, { passive: true });
-      window.addEventListener("blur", resetPointer);
-      document.addEventListener("visibilitychange", resetPointer);
+      window.addEventListener("pointercancel", cancelPointer, { passive: true });
+      window.addEventListener("blur", cancelPointer);
+      document.addEventListener("visibilitychange", cancelPointer);
     }
     canvas.addEventListener("webglcontextlost", onContextLost);
     animationFrame = requestAnimationFrame(render);
@@ -137,11 +159,13 @@ export default function FluidBackground() {
       cancelAnimationFrame(animationFrame);
       resizeObserver.disconnect();
       if (fluidConfig.pointerInteraction) {
+        window.removeEventListener("pointerdown", onPointerDown);
         window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
         window.removeEventListener("pointerout", onPointerOut);
-        window.removeEventListener("pointercancel", resetPointer);
-        window.removeEventListener("blur", resetPointer);
-        document.removeEventListener("visibilitychange", resetPointer);
+        window.removeEventListener("pointercancel", cancelPointer);
+        window.removeEventListener("blur", cancelPointer);
+        document.removeEventListener("visibilitychange", cancelPointer);
       }
       canvas.removeEventListener("webglcontextlost", onContextLost);
       simulation?.dispose();

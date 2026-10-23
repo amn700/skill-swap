@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@fontsource/spline-sans/700.css";
 
 @theme inline {
   --color-background: var(--background);
@@ -52,6 +53,18 @@
 
 * {
   box-sizing: border-box;
+}
+
+.hero-title {
+  font-family: "Spline Sans", sans-serif;
+  font-weight: 700;
+}
+
+.hero-title-accent {
+  color: #c4b5fd;
+  background: linear-gradient(100deg, #c4b5fd 8%, #a5b4fc 52%, #93c5fd 96%);
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 html {

@@ -10,6 +10,8 @@ import { gradientShader } from "./shaders/gradient.frag.js";
 import { displayShader } from "./shaders/display.frag.js";
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const randomBetween = (min, max) => min + Math.random() * (max - min);
+const SMALL_SPLASHES_PER_COLOR = 4;
 
 function resolutionFor(maxSize, aspect) {
   return aspect >= 1
@@ -52,8 +54,21 @@ export function createFluidSimulation(canvas, gl) {
   let curl;
   let divergence;
   let viewport = { width: 1, height: 1 };
-  let seeded = false;
+  let simulationTime = 0;
+  let nextSeedTime = 0;
+  let initialSplats = [];
+  let initialSplatTimer = 0;
+  let reverseSeedOrder = false;
   let disposed = false;
+  const smallSplashEmitters = fluidConfig.colors.flatMap((_, colorIndex) =>
+    Array.from({ length: SMALL_SPLASHES_PER_COLOR }, (_, slot) => ({
+      colorIndex,
+      hasSpawned: false,
+      nextSpawnTime: 0.3
+        + (colorIndex * SMALL_SPLASHES_PER_COLOR + slot) * 0.3
+        + randomBetween(0, 0.18),
+    })),
+  );
 
   function releaseTargets() {
     velocity?.dispose();
@@ -94,7 +109,9 @@ export function createFluidSimulation(canvas, gl) {
       }
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    seeded = false;
+    initialSplats = [];
+    initialSplatTimer = 0;
+    nextSeedTime = simulationTime;
   }
 
   function bindTexture(texture, unit) {
@@ -123,10 +140,7 @@ export function createFluidSimulation(canvas, gl) {
     apply(dye, color.map((channel) => channel * dyeStrength));
   }
 
-  function seedInitialFlow() {
-    if (seeded) return;
-    seeded = true;
-
+  function createInitialFlow() {
     const colors = fluidConfig.colors;
     const paths = [
       {
@@ -137,6 +151,7 @@ export function createFluidSimulation(canvas, gl) {
           [0.32, 0.68, 0.13, -0.22], [0.40, 0.62, 0.22, -0.12],
           [0.49, 0.59, 0.30, 0.04], [0.57, 0.63, 0.24, 0.17],
         ],
+        sideSplashes: [[0.29, 0.59, 0.18, -0.12], [0.48, 0.70, 0.18, 0.12]],
       },
       {
         color: colors[1],
@@ -146,29 +161,47 @@ export function createFluidSimulation(canvas, gl) {
           [0.66, 0.56, -0.26, -0.08], [0.57, 0.51, -0.21, -0.15],
           [0.49, 0.42, -0.16, -0.22],
         ],
+        sideSplashes: [[0.63, 0.64, -0.16, 0.12], [0.86, 0.47, -0.20, 0.10]],
       },
       {
         color: colors[2],
         points: [
-          [0.22, 0.025, 0.10, 0.32], [0.28, 0.12, 0.16, 0.28],
-          [0.36, 0.22, 0.22, 0.24], [0.46, 0.30, 0.25, 0.13],
-          [0.55, 0.34, 0.18, 0.10], [0.62, 0.42, 0.11, 0.19],
-          [0.65, 0.51, -0.03, 0.22],
+          [0.50, 0.025, -0.05, 0.32], [0.44, 0.12, -0.12, 0.28],
+          [0.36, 0.21, -0.18, 0.22], [0.29, 0.29, -0.10, 0.15],
+          [0.32, 0.36, 0.05, 0.10], [0.40, 0.42, 0.15, 0.18],
+          [0.50, 0.50, 0.18, 0.22],
         ],
+        sideSplashes: [[0.23, 0.34, 0.06, 0.12], [0.58, 0.44, 0.14, 0.14]],
       },
     ];
 
-    for (const path of paths) {
-      for (const [x, y, vx, vy] of path.points) {
-        splat(
-          { x, y },
-          { x: vx * velocity.read.width, y: vy * velocity.read.height },
-          [path.color.r, path.color.g, path.color.b],
-          fluidConfig.splatRadius * 0.05,
-          0.9,
-        );
+    const makeSeed = (path, point, scale = 1) => {
+      const [x, y, vx, vy] = point;
+      return {
+        point: { x, y },
+        force: {
+          x: vx * velocity.read.width * scale,
+          y: vy * velocity.read.height * scale,
+        },
+        color: [path.color.r, path.color.g, path.color.b],
+        radius: fluidConfig.splatRadius * 0.055 * scale,
+        dyeStrength: 1.25 * scale,
+      };
+    };
+
+    const seeds = [];
+    const pointCount = Math.max(...paths.map((path) => path.points.length));
+    for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+      for (const path of paths) {
+        const point = path.points[pointIndex];
+        if (!point) continue;
+        seeds.push(makeSeed(path, point));
       }
     }
+    for (const path of paths) {
+      for (const point of path.sideSplashes) seeds.push(makeSeed(path, point, 0.65));
+    }
+    return seeds;
   }
 
   function clearPressure() {
@@ -196,10 +229,84 @@ export function createFluidSimulation(canvas, gl) {
     }
   }
 
+  function emitSmallSplash(emitter) {
+    const angle = randomBetween(0, Math.PI * 2);
+    const speed = randomBetween(0.15, 0.28);
+    const size = randomBetween(0.026, 0.06);
+    const strength = randomBetween(0.8, 1.35);
+    const centered = () => clamp(
+      0.5 + (Math.random() + Math.random() - 1) * 0.42,
+      0.12,
+      0.88,
+    );
+    const point = { x: centered(), y: centered() };
+    const force = {
+      x: Math.cos(angle) * velocity.read.width * speed,
+      y: Math.sin(angle) * velocity.read.height * speed,
+    };
+    const color = fluidConfig.colors[emitter.colorIndex];
+
+    splat(
+      point,
+      force,
+      [color.r, color.g, color.b],
+      fluidConfig.splatRadius * size,
+      strength,
+    );
+  }
+
+  function updateSmallSplashes() {
+    for (const emitter of smallSplashEmitters) {
+      if (simulationTime < emitter.nextSpawnTime) continue;
+
+      if (!emitter.hasSpawned) {
+        emitSmallSplash(emitter);
+        emitter.hasSpawned = true;
+        emitter.nextSpawnTime = simulationTime + randomBetween(1.6, 3.2);
+        continue;
+      }
+
+      const partners = smallSplashEmitters.filter((candidate) =>
+        candidate !== emitter && candidate.hasSpawned,
+      );
+      if (partners.length === 0) {
+        emitter.nextSpawnTime = simulationTime + 0.5;
+        continue;
+      }
+
+      const partner = partners[Math.floor(Math.random() * partners.length)];
+      [emitter.colorIndex, partner.colorIndex] = [partner.colorIndex, emitter.colorIndex];
+      emitSmallSplash(emitter);
+      emitSmallSplash(partner);
+      emitter.nextSpawnTime = simulationTime + randomBetween(1.6, 3.2);
+      partner.nextSpawnTime = simulationTime + randomBetween(1.6, 3.2);
+    }
+  }
+
   function step(dt, pointerEvents = []) {
     if (disposed) return;
     resize();
-    seedInitialFlow();
+    simulationTime += dt;
+    if (simulationTime >= nextSeedTime && initialSplats.length === 0) {
+      initialSplats = createInitialFlow();
+      if (reverseSeedOrder) {
+        initialSplats.reverse();
+        initialSplats = initialSplats.map((seed) => ({
+          ...seed,
+          force: { x: -seed.force.x, y: -seed.force.y },
+        }));
+      }
+      reverseSeedOrder = !reverseSeedOrder;
+      initialSplatTimer = fluidConfig.initialSplatInterval;
+      nextSeedTime = simulationTime + 10;
+    }
+    while (initialSplats.length > 0 && initialSplatTimer >= fluidConfig.initialSplatInterval) {
+      const seed = initialSplats.shift();
+      splat(seed.point, seed.force, seed.color, seed.radius, seed.dyeStrength);
+      initialSplatTimer -= fluidConfig.initialSplatInterval;
+    }
+    if (initialSplats.length > 0) initialSplatTimer += dt;
+    updateSmallSplashes();
     applyPointerSplats(pointerEvents);
 
     const simTexel = [1 / velocity.read.width, 1 / velocity.read.height];

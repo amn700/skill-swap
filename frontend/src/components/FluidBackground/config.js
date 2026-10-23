@@ -4,11 +4,12 @@ export const fluidConfig = {
   dyeResolution: 1440,
 
   // Fluid behavior
-  densityDissipation: 0,
+  densityDissipation: 2.2,
   velocityDissipation: 0.65,
   pressure: 0.1,
   pressureIterations: 20,
   curl: 2.8,
+  initialSplatInterval: 0.4,
 
   // Mouse interaction
   pointerInteraction: true,
